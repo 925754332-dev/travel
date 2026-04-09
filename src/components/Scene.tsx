@@ -1,8 +1,9 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { Float, Sparkles, RoundedBox, Sphere, Cylinder, Torus, Text, Text3D, Center } from '@react-three/drei';
+import { Float, Sparkles, RoundedBox, Sphere, Cylinder, Torus, Text, Text3D, Center, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { MotionValue } from 'motion/react';
+import { useNavigate } from 'react-router-dom';
 
 interface SceneProps {
   progress: MotionValue<number>;
@@ -75,23 +76,23 @@ const Coin = () => {
   return (
     <group>
       {/* Main body (flat sides, perfectly flush with the outer rim) */}
-      <Cylinder args={[coinRadius, coinRadius, thickness, 64]} castShadow>
+      <Cylinder args={[coinRadius, coinRadius, thickness, 32]} castShadow>
         <meshStandardMaterial color={goldColor} metalness={0.75} roughness={0.35} />
       </Cylinder>
       
       {/* Raised rims (outer edge) - Top and Bottom */}
-      <Torus args={[rimRadius, rimThickness, 16, 64]} position={[0, halfT, 0]} rotation={[Math.PI / 2, 0, 0]} castShadow>
+      <Torus args={[rimRadius, rimThickness, 16, 32]} position={[0, halfT, 0]} rotation={[Math.PI / 2, 0, 0]} castShadow>
         <meshStandardMaterial color={goldColor} metalness={0.75} roughness={0.35} />
       </Torus>
-      <Torus args={[rimRadius, rimThickness, 16, 64]} position={[0, -halfT, 0]} rotation={[Math.PI / 2, 0, 0]} castShadow>
+      <Torus args={[rimRadius, rimThickness, 16, 32]} position={[0, -halfT, 0]} rotation={[Math.PI / 2, 0, 0]} castShadow>
         <meshStandardMaterial color={goldColor} metalness={0.75} roughness={0.35} />
       </Torus>
 
       {/* Inner stepped rims - Top and Bottom */}
-      <Torus args={[innerRadius, 0.015, 16, 64]} position={[0, halfT, 0]} rotation={[Math.PI / 2, 0, 0]}>
+      <Torus args={[innerRadius, 0.015, 16, 32]} position={[0, halfT, 0]} rotation={[Math.PI / 2, 0, 0]}>
         <meshStandardMaterial color={goldColor} metalness={0.75} roughness={0.35} />
       </Torus>
-      <Torus args={[innerRadius, 0.015, 16, 64]} position={[0, -halfT, 0]} rotation={[Math.PI / 2, 0, 0]}>
+      <Torus args={[innerRadius, 0.015, 16, 32]} position={[0, -halfT, 0]} rotation={[Math.PI / 2, 0, 0]}>
         <meshStandardMaterial color={goldColor} metalness={0.75} roughness={0.35} />
       </Torus>
       
@@ -101,10 +102,10 @@ const Coin = () => {
         const radius = 0.34;
         return (
           <group key={i} rotation={[0, -angle, 0]}>
-            <Sphere args={[0.015, 8, 8]} position={[radius, halfT + 0.005, 0]}>
+            <Sphere args={[0.015, 6, 6]} position={[radius, halfT + 0.005, 0]}>
               <meshStandardMaterial color={goldColor} metalness={0.75} roughness={0.35} />
             </Sphere>
-            <Sphere args={[0.015, 8, 8]} position={[radius, -(halfT + 0.005), 0]}>
+            <Sphere args={[0.015, 6, 6]} position={[radius, -(halfT + 0.005), 0]}>
               <meshStandardMaterial color={goldColor} metalness={0.75} roughness={0.35} />
             </Sphere>
           </group>
@@ -224,8 +225,78 @@ const Suitcase = () => {
   );
 };
 
+function ClickableText({ text, color, position, rotation, onClick }: any) {
+  const [hovered, setHovered] = useState(false);
+  const groupRef = useRef<THREE.Group>(null);
+
+  useFrame((state, delta) => {
+    if (groupRef.current) {
+      const targetScale = hovered ? 1.08 : 1;
+      groupRef.current.scale.lerp(new THREE.Vector3(targetScale, targetScale, targetScale), delta * 10);
+    }
+  });
+
+  return (
+    <group
+      ref={groupRef}
+      position={position}
+      rotation={rotation}
+    >
+      {/* Transparent hitbox placed slightly in front of the text.
+          Using a PlaneGeometry ensures it only has a front face.
+          By putting events ONLY on this plane, we prevent triggering from the back. */}
+      <mesh 
+        position={[0, 0.15, 0.2]}
+        onClick={onClick}
+        onPointerEnter={(e) => { e.stopPropagation(); setHovered(true); document.body.style.cursor = 'pointer'; }}
+        onPointerLeave={(e) => { e.stopPropagation(); setHovered(false); document.body.style.cursor = 'grab'; }}
+      >
+        <planeGeometry args={[5.5, 1.5]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} side={THREE.FrontSide} />
+      </mesh>
+
+      <Center>
+        <Text3D
+          font="https://cdn.jsdelivr.net/npm/three@0.150.0/examples/fonts/helvetiker_bold.typeface.json"
+          size={0.5}
+          height={0.15}
+          curveSegments={8}
+          bevelEnabled
+          bevelThickness={0.02}
+          bevelSize={0.02}
+          bevelOffset={0}
+          bevelSegments={3}
+          letterSpacing={0.02}
+          castShadow
+        >
+          {text}
+          <meshStandardMaterial 
+            color={color} 
+            metalness={0.4} 
+            roughness={0.3} 
+            emissive={color}
+            emissiveIntensity={hovered ? 0.4 : 0}
+          />
+        </Text3D>
+      </Center>
+      
+      {/* Added whitespace-nowrap to prevent text wrapping into multiple lines */}
+      <Html position={[0, -0.6, 0]} center style={{ pointerEvents: 'none' }}>
+        <div
+          className={`bg-white/90 backdrop-blur-md px-4 py-1.5 rounded-full shadow-lg text-sm font-bold text-gray-700 flex items-center gap-2 whitespace-nowrap border border-white/50 transition-all duration-300 ${
+            hovered ? 'scale-110 opacity-100' : 'scale-100 opacity-0'
+          }`}
+        >
+          <span className="animate-bounce">👆</span> Click to open
+        </div>
+      </Html>
+    </group>
+  );
+}
+
 export default function Scene({ progress }: SceneProps) {
   const groupRef = useRef<THREE.Group>(null);
+  const navigate = useNavigate();
 
   useFrame(() => {
     if (groupRef.current) {
@@ -301,26 +372,12 @@ export default function Scene({ progress }: SceneProps) {
         </group>
 
         {/* Travel Plan Text Sculpture */}
-        <group position={[0, 0.3, 3.2]}>
-          <Center>
-            <Text3D
-              font="https://cdn.jsdelivr.net/npm/three@0.150.0/examples/fonts/helvetiker_bold.typeface.json"
-              size={0.5}
-              height={0.15}
-              curveSegments={12}
-              bevelEnabled
-              bevelThickness={0.02}
-              bevelSize={0.02}
-              bevelOffset={0}
-              bevelSegments={5}
-              letterSpacing={0.02}
-              castShadow
-            >
-              TRAVEL PLAN
-              <meshStandardMaterial color="#ffafcc" metalness={0.4} roughness={0.3} />
-            </Text3D>
-          </Center>
-        </group>
+        <ClickableText 
+          text="TRAVEL PLAN"
+          color="#ffafcc"
+          position={[0, 0.3, 3.2]}
+          onClick={() => navigate('/plan')}
+        />
 
         {/* Side B: Accounting (Z < 0, rotated 180) */}
         <group position={[0, 0, -1.5]} rotation={[0, Math.PI, 0]}>
@@ -328,26 +385,13 @@ export default function Scene({ progress }: SceneProps) {
         </group>
 
         {/* Travel Budget Text Sculpture */}
-        <group position={[0, 0.3, -3.2]} rotation={[0, Math.PI, 0]}>
-          <Center>
-            <Text3D
-              font="https://cdn.jsdelivr.net/npm/three@0.150.0/examples/fonts/helvetiker_bold.typeface.json"
-              size={0.5}
-              height={0.15}
-              curveSegments={12}
-              bevelEnabled
-              bevelThickness={0.02}
-              bevelSize={0.02}
-              bevelOffset={0}
-              bevelSegments={5}
-              letterSpacing={0.02}
-              castShadow
-            >
-              TRAVEL BUDGET
-              <meshStandardMaterial color="#baffc9" metalness={0.4} roughness={0.3} />
-            </Text3D>
-          </Center>
-        </group>
+        <ClickableText 
+          text="TRAVEL BUDGET"
+          color="#baffc9"
+          position={[0, 0.3, -3.2]}
+          rotation={[0, Math.PI, 0]}
+          onClick={() => navigate('/budget')}
+        />
       </group>
     </group>
   );

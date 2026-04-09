@@ -1,0 +1,141 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users/{userId}/plans/{planId}
+    // Document ID: auto-generated
+    // Fields:
+    //   - userId: string (required, immutable) - The UID of the user who created the plan
+    //   - destination: string (required) - The destination of the trip
+    //   - origin: string (required) - The origin of the trip
+    //   - days: number (required) - The duration of the trip in days
+    //   - theme: string (required) - The theme of the trip
+    //   - createdAt: string (required, immutable) - The creation time of the plan in ISO format
+    //   - data: string (required) - The serialized JSON string of the plan data
+    //
+    // Collection: users/{userId}/budgets/{budgetId}
+    // Document ID: auto-generated
+    // Fields:
+    //   - userId: string (required, immutable) - The UID of the user who created the budget
+    //   - destination: string (required) - The destination of the trip
+    //   - days: number (required) - The duration of the trip in days
+    //   - createdAt: string (required, immutable) - The creation time of the budget in ISO format
+    //   - data: string (required) - The serialized JSON string of the budget data
+    //
+    // Collection: shared_items/{shareId}
+    // Document ID: auto-generated
+    // Fields:
+    //   - type: string (required) - 'plan' or 'budget'
+    //   - data: string (required) - The serialized JSON string of the data
+    //   - ownerId: string (required, immutable) - The UID of the user who shared it
+    //   - createdAt: string (required, immutable) - The creation time in ISO format
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "925754332@qq.com" && request.auth.token.email_verified == true));
+    }
+
+    function hasOnlyAllowedFields(allowedFields) {
+      return request.resource.data.keys().hasOnly(allowedFields);
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string &&
+        dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    function isValidPlan() {
+      let requiredFields = ['userId', 'destination', 'origin', 'days', 'theme', 'createdAt', 'data'];
+      let allAllowedFields = ['userId', 'destination', 'origin', 'days', 'theme', 'createdAt', 'data', 'itinerary', 'selectedFlight', 'isPublicEdit'];
+      
+      return request.resource.data.keys().hasAll(requiredFields) &&
+             request.resource.data.keys().hasOnly(allAllowedFields) &&
+             request.resource.data.userId is string &&
+             (resource == null ? request.resource.data.userId == request.auth.uid : true) &&
+             request.resource.data.destination is string && request.resource.data.destination.size() < 200 &&
+             request.resource.data.origin is string && request.resource.data.origin.size() < 200 &&
+             request.resource.data.days is number && request.resource.data.days >= 0 && request.resource.data.days <= 365 &&
+             request.resource.data.theme is string && request.resource.data.theme.size() > 0 && request.resource.data.theme.size() < 100 &&
+             isValidDateString(request.resource.data.createdAt) &&
+             request.resource.data.data is string && request.resource.data.data.size() > 0 && request.resource.data.data.size() < 1000000 &&
+             (!('itinerary' in request.resource.data) || request.resource.data.itinerary is list) &&
+             (!('selectedFlight' in request.resource.data) || request.resource.data.selectedFlight is map) &&
+             (!('isPublicEdit' in request.resource.data) || request.resource.data.isPublicEdit is bool);
+    }
+
+    function isValidBudget() {
+      let requiredFields = ['userId', 'destination', 'days', 'createdAt', 'data'];
+      let allAllowedFields = ['userId', 'destination', 'days', 'createdAt', 'data', 'isPublicEdit'];
+      return request.resource.data.keys().hasOnly(allAllowedFields) &&
+             request.resource.data.keys().hasAll(requiredFields) &&
+             request.resource.data.userId is string &&
+             (resource == null ? request.resource.data.userId == request.auth.uid : true) &&
+             request.resource.data.destination is string && request.resource.data.destination.size() < 200 &&
+             request.resource.data.days is number && request.resource.data.days >= 0 && request.resource.data.days <= 365 &&
+             isValidDateString(request.resource.data.createdAt) &&
+             request.resource.data.data is string && request.resource.data.data.size() > 0 && request.resource.data.data.size() < 1000000 &&
+             (!('isPublicEdit' in request.resource.data) || request.resource.data.isPublicEdit is bool);
+    }
+
+    function isValidSharedItem() {
+      let requiredFields = ['type', 'data', 'ownerId', 'createdAt'];
+      return hasOnlyAllowedFields(requiredFields) &&
+             hasRequiredFields(requiredFields) &&
+             request.resource.data.type in ['plan', 'budget'] &&
+             request.resource.data.data is string && request.resource.data.data.size() > 0 && request.resource.data.data.size() < 1000000 &&
+             request.resource.data.ownerId is string &&
+             request.resource.data.ownerId == request.auth.uid &&
+             isValidDateString(request.resource.data.createdAt);
+    }
+
+    match /shared_items/{shareId} {
+      allow read: if true;
+      allow create: if isAuthenticated() && isValidSharedItem();
+      allow update: if false;
+      allow delete: if isOwner(resource.data.ownerId) || isAdmin();
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      
+      match /plans/{planId} {
+        allow read: if isOwner(userId) || isAdmin() || (resource != null && resource.data.isPublicEdit == true);
+        allow create: if (isOwner(userId) || isAdmin()) && isValidPlan();
+        allow update: if (isOwner(userId) || isAdmin() || (resource != null && resource.data.isPublicEdit == true)) && isValidPlan() && areImmutableFieldsUnchanged(['userId', 'createdAt']);
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+
+      match /budgets/{budgetId} {
+        allow read: if isOwner(userId) || isAdmin() || (resource != null && resource.data.isPublicEdit == true);
+        allow create: if (isOwner(userId) || isAdmin()) && isValidBudget();
+        allow update: if (isOwner(userId) || isAdmin() || (resource != null && resource.data.isPublicEdit == true)) && isValidBudget() && areImmutableFieldsUnchanged(['userId', 'createdAt']);
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+    }
+  }
+}
