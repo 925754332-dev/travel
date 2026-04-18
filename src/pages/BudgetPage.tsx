@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, PieChart as PieChartIcon, Receipt, Loader2, DollarSign, AlertCircle, Save, Check, Trash2, MapPin, Edit2, MessageSquare, Sparkles, X, Send, ArrowUp, Upload, Share, Users } from 'lucide-react';
+import { ArrowLeft, PieChart as PieChartIcon, Receipt, Loader2, DollarSign, AlertCircle, Save, Check, Trash2, MapPin, Edit2, MessageSquare, Sparkles, X, Send, ArrowUp, Upload, Share, Users, Plus } from 'lucide-react';
 import { GoogleGenAI, Type } from '@google/genai';
+import GlobalAuth from '../components/GlobalAuth';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
 import * as XLSX from 'xlsx';
 import { auth, db, handleFirestoreError, OperationType } from '../firebase';
@@ -794,13 +795,13 @@ export default function BudgetPage() {
       currentBudgetIdRef.current = budgetToSave.id;
     }
 
-    if (auth.currentUser) {
+    if (auth.currentUser || isCollab) {
       const docId = currentFirestoreIdRef.current;
       try {
-        const userIdToSave = isCollab ? collabUserId! : auth.currentUser.uid;
+        const userIdToSave = isCollab ? collabUserId! : auth.currentUser!.uid;
         const docRef = docId 
           ? doc(db, 'users', userIdToSave, 'budgets', docId)
-          : doc(collection(db, 'users', auth.currentUser.uid, 'budgets'));
+          : doc(collection(db, 'users', auth.currentUser!.uid, 'budgets'));
         
         if (!docId) {
           setCurrentFirestoreId(docRef.id);
@@ -808,14 +809,14 @@ export default function BudgetPage() {
         }
 
         await setDoc(docRef, {
-          userId: isCollab ? collabUserId! : auth.currentUser.uid,
-          destination,
+          userId: isCollab ? collabUserId! : auth.currentUser!.uid,
+          destination: destination ? destination.substring(0, 190) : 'Custom',
           days: daysCount,
           createdAt: budgetToSave.createdAt,
           data: JSON.stringify({ ...budgetToSave, firestoreId: docRef.id })
         }, { merge: true });
       } catch (error) {
-        handleFirestoreError(error, docId ? OperationType.UPDATE : OperationType.CREATE, `users/${auth.currentUser.uid}/budgets`);
+        handleFirestoreError(error, docId ? OperationType.UPDATE : OperationType.CREATE, `users/${isCollab ? collabUserId : auth.currentUser?.uid}/budgets`);
       }
     } else {
       let updated: SavedBudget[];
@@ -992,19 +993,22 @@ export default function BudgetPage() {
             </button>
             
             {/* Language Toggle */}
-            <div className="flex items-center bg-white rounded-full p-1 border border-gray-200 shadow-sm">
-              <button
-                onClick={() => setLanguage('zh')}
-                className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${language === 'zh' ? 'bg-gray-900 text-white' : 'text-gray-500 hover:text-gray-900'}`}
-              >
-                中文
-              </button>
-              <button
-                onClick={() => setLanguage('en')}
-                className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${language === 'en' ? 'bg-gray-900 text-white' : 'text-gray-500 hover:text-gray-900'}`}
-              >
-                EN
-              </button>
+            <div className="flex items-center gap-4">
+              <div className="flex items-center bg-white rounded-full p-1 border border-gray-200 shadow-sm">
+                <button
+                  onClick={() => setLanguage('zh')}
+                  className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${language === 'zh' ? 'bg-gray-900 text-white' : 'text-gray-500 hover:text-gray-900'}`}
+                >
+                  中文
+                </button>
+                <button
+                  onClick={() => setLanguage('en')}
+                  className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${language === 'en' ? 'bg-gray-900 text-white' : 'text-gray-500 hover:text-gray-900'}`}
+                >
+                  EN
+                </button>
+              </div>
+              <GlobalAuth />
             </div>
           </div>
 
@@ -1143,6 +1147,38 @@ export default function BudgetPage() {
     );
   }
 
+  const handleAddToMyBudgets = async () => {
+    if (!budgetData) return;
+    
+    const budgetToSave = {
+      id: Date.now().toString() + '-' + Math.random().toString(36).substr(2, 9),
+      destination: plan ? plan.destination : (passedSavedBudget?.destination || 'Unknown'),
+      days: plan ? plan.days : (passedSavedBudget?.days || 1),
+      createdAt: new Date().toISOString(),
+      data: budgetData
+    };
+
+    if (auth.currentUser) {
+      try {
+        const docRef = doc(collection(db, 'users', auth.currentUser.uid, 'budgets'));
+        await setDoc(docRef, {
+          userId: auth.currentUser.uid,
+          destination: budgetToSave.destination,
+          days: budgetToSave.days,
+          createdAt: budgetToSave.createdAt,
+          data: JSON.stringify({ ...budgetToSave, firestoreId: docRef.id })
+        });
+        alert(language === 'zh' ? '已添加到我的账单！' : 'Added to my budgets!');
+      } catch (error) {
+        handleFirestoreError(error, OperationType.CREATE, `users/${auth.currentUser.uid}/budgets`);
+      }
+    } else {
+      const existingBudgets = JSON.parse(localStorage.getItem('saved_travel_budgets') || '[]');
+      localStorage.setItem('saved_travel_budgets', JSON.stringify([...existingBudgets, budgetToSave]));
+      alert(language === 'zh' ? '已添加到本地账单！' : 'Added to local budgets!');
+    }
+  };
+
   if (!plan && !passedSavedBudget && !isLoading) {
     return (
       <div className="min-h-screen bg-[#faf9f8] p-8 flex flex-col items-center justify-center">
@@ -1168,20 +1204,32 @@ export default function BudgetPage() {
             {t.back}
           </button>
           
-          {/* Language Toggle */}
-          <div className="flex items-center bg-white rounded-full p-1 border border-gray-200 shadow-sm">
-            <button
-              onClick={() => setLanguage('zh')}
-              className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${language === 'zh' ? 'bg-gray-900 text-white' : 'text-gray-500 hover:text-gray-900'}`}
-            >
-              中文
-            </button>
-            <button
-              onClick={() => setLanguage('en')}
-              className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${language === 'en' ? 'bg-gray-900 text-white' : 'text-gray-500 hover:text-gray-900'}`}
-            >
-              EN
-            </button>
+          <div className="flex items-center gap-4">
+            {(isShared || (isCollab && auth.currentUser?.uid !== collabUserId)) && (
+              <button
+                onClick={handleAddToMyBudgets}
+                className="text-sm font-semibold text-emerald-600 hover:text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-4 py-2 rounded-full transition-colors flex items-center gap-2"
+              >
+                <Plus size={16} />
+                {language === 'zh' ? '添加到我的账单' : 'Add to my budgets'}
+              </button>
+            )}
+            {/* Language Toggle */}
+            <div className="flex items-center bg-white rounded-full p-1 border border-gray-200 shadow-sm">
+              <button
+                onClick={() => setLanguage('zh')}
+                className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${language === 'zh' ? 'bg-gray-900 text-white' : 'text-gray-500 hover:text-gray-900'}`}
+              >
+                中文
+              </button>
+              <button
+                onClick={() => setLanguage('en')}
+                className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${language === 'en' ? 'bg-gray-900 text-white' : 'text-gray-500 hover:text-gray-900'}`}
+              >
+                EN
+              </button>
+            </div>
+            <GlobalAuth />
           </div>
         </div>
 

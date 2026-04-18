@@ -6,6 +6,7 @@ import GlobalAuth from '../components/GlobalAuth';
 import { auth, db, handleFirestoreError, OperationType } from '../firebase';
 import { doc, collection, setDoc, updateDoc, query, orderBy, limit, getDocs, onSnapshot } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
+import * as XLSX from 'xlsx';
 
 // Initialize Gemini API
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -57,6 +58,8 @@ interface FlightOption {
 interface TravelPlan {
   flightOptions: FlightOption[];
   days: DayPlan[];
+  parsedOrigin?: string;
+  parsedDestination?: string;
   aiMessage?: string;
 }
 
@@ -129,9 +132,11 @@ const planSchema = {
   properties: {
     flightOptions: flightOptionsSchema,
     days: daysSchema,
+    parsedOrigin: { type: Type.STRING, description: "The origin city detected from context, e.g. 'Beijing'" },
+    parsedDestination: { type: Type.STRING, description: "The destination city detected from context, e.g. 'Tokyo'" },
     aiMessage: { type: Type.STRING, description: "Optional dynamic message from AI explaining the changes." }
   },
-  required: ["flightOptions", "days"]
+  required: ["flightOptions", "days", "parsedOrigin", "parsedDestination"]
 };
 
 const translations = {
@@ -153,7 +158,7 @@ const translations = {
     requirementsPlaceholder: '例如：我偏好素食，想多逛逛博物馆，希望乘坐火车旅行。',
     generate: '生成行程',
     generating: '正在为您精心规划...',
-    errorEmpty: '请填写出发地、目的地和天数。',
+    errorEmpty: '请填写出发地、目的地和天数，或直接上传文档/填写要求。',
     errorFail: '生成计划失败，请重试。',
     dayPrefix: '第',
     daySuffix: '天',
@@ -204,7 +209,7 @@ const translations = {
     requirementsPlaceholder: 'e.g. I prefer vegetarian food, want to visit museums, and travel by train.',
     generate: 'Generate Plan',
     generating: 'Crafting your itinerary...',
-    errorEmpty: 'Please fill in origin, destination, and number of days.',
+    errorEmpty: 'Please fill in origin, destination, and days, or provide context in the requirements.',
     errorFail: 'Failed to generate plan. Please try again.',
     dayPrefix: 'Day',
     daySuffix: '',
@@ -296,7 +301,7 @@ function AttractionImage({ wikipediaTitle, fallbackKeyword, alt }: { wikipediaTi
   );
 }
 
-export default function PlanPage() {
+export default function DocPlanPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const { userId: collabUserId, planId: collabPlanId } = useParams();
@@ -440,18 +445,50 @@ export default function PlanPage() {
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const text = event.target?.result as string;
-      setRequirements(prev => {
-        const textToAdd = `[📄 ${file.name} context]:\n${text}\n`;
-        return prev ? prev + '\n\n' + textToAdd : textToAdd;
-      });
-    };
-    reader.onerror = () => {
-      alert(language === 'zh' ? '读取文件失败' : 'Failed to read file');
-    };
-    reader.readAsText(file);
+    const fileExtension = file.name.split('.').pop()?.toLowerCase();
+
+    if (fileExtension === 'xlsx' || fileExtension === 'xls') {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          const data = new Uint8Array(event.target?.result as ArrayBuffer);
+          const workbook = XLSX.read(data, { type: 'array' });
+          let textContext = '';
+          
+          workbook.SheetNames.forEach(sheetName => {
+            const worksheet = workbook.Sheets[sheetName];
+            const csv = XLSX.utils.sheet_to_csv(worksheet);
+            if (csv.trim()) {
+              textContext += `\n--- Sheet: ${sheetName} ---\n${csv}\n`;
+            }
+          });
+          
+          setRequirements(prev => {
+            const textToAdd = `[📄 ${file.name} context]:\n${textContext}\n`;
+            return prev ? prev + '\n\n' + textToAdd : textToAdd;
+          });
+        } catch (err) {
+          console.error(err);
+          alert(language === 'zh' ? '解析 Excel 文件失败' : 'Failed to parse Excel file');
+        }
+      };
+      reader.onerror = () => alert(language === 'zh' ? '读取文件失败' : 'Failed to read file');
+      reader.readAsArrayBuffer(file);
+    } else {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const text = event.target?.result as string;
+        setRequirements(prev => {
+          const textToAdd = `[📄 ${file.name} context]:\n${text}\n`;
+          return prev ? prev + '\n\n' + textToAdd : textToAdd;
+        });
+      };
+      reader.onerror = () => {
+        alert(language === 'zh' ? '读取文件失败' : 'Failed to read file');
+      };
+      reader.readAsText(file);
+    }
+    
     e.target.value = ''; // Reset input so the same file can be selected again
   };
 
@@ -470,8 +507,8 @@ export default function PlanPage() {
       }
     }
 
-    if (!origin || !destination || !effectiveDays) {
-      setError(t.errorEmpty);
+    if (!requirements.trim()) {
+      setError(language === 'zh' ? '请在文档输入框中提供行程信息（或上传文档）。' : 'Please provide context or upload a document.');
       return;
     }
     
@@ -484,14 +521,26 @@ export default function PlanPage() {
     setChatMessages([]);
 
     try {
+      const baseInfo = [];
+      if (origin) baseInfo.push(`Origin: ${origin}`);
+      if (destination) baseInfo.push(`Destination: ${destination}`);
+      if (effectiveDays) baseInfo.push(`Duration: ${effectiveDays} days`);
+      const baseInfoStr = baseInfo.length > 0 ? `Basic info:\n- ${baseInfo.join('\n- ')}\n` : '';
+
       const dateContext = (startDate || endDate) ? `Dates: ${startDate ? startDate : 'Not specified'} to ${endDate ? endDate : 'Not specified'}.` : '';
       const flightQueryExample = (startDate && endDate) 
-        ? `Flights from ${origin} to ${destination} on ${startDate} returning ${endDate}`
-        : (startDate ? `Flights from ${origin} to ${destination} on ${startDate}` : `Flights from ${origin} to ${destination}`);
+        ? `Flights from ${origin || 'the origin'} to ${destination || 'the destination'} on ${startDate} returning ${endDate}`
+        : (startDate ? `Flights from ${origin || 'the origin'} to ${destination || 'the destination'} on ${startDate}` : `Flights from ${origin || 'the origin'} to ${destination || 'the destination'}`);
         
-      const prompt = `Plan a travel itinerary from ${origin} to ${destination} for ${effectiveDays} days. 
+      const prompt = `Plan a travel itinerary.
+      
+      ${baseInfoStr}
       ${dateContext}
-      Additional requirements or preferences: ${requirements || 'None'}. 
+      
+      User Requirements and Context (Extremely important, deduce missing details like destination, origin, or days from here if not provided above):
+      ${requirements || 'None'}
+      
+      CRITICAL: If the User Requirements mention specific destinations, origins, or durations that conflict with the Basic info, PRIORITIZE the User Requirements. If the uploaded document contains an itinerary spanning multiple days (e.g., 5 days, 12 days, etc.), you MUST extract and return EVERY SINGLE DAY described in the document. DO NOT summarize, truncate, or drop days. The length of your resulting 'days' array MUST MATCH the number of days depicted in the document. If days/duration is not specified anywhere, default to whatever is most logical based on the text, but do not artificially compress a long trip into 3 days.
       
       Provide exactly 3 realistic transport options (e.g., Flights or High-Speed Rail) to save output space for the detailed itinerary. 
       CRITICAL: For domestic travel within China (e.g., Beijing to Shanghai), prioritize High-Speed Rail (高铁) as it is often more convenient. 
@@ -530,8 +579,13 @@ export default function PlanPage() {
           parsedPlan = JSON.parse(response.text) as TravelPlan;
         } catch (e) {
           console.error("JSON Parse Error:", e, response.text);
-          throw new Error(language === 'zh' ? '行程生成失败：数据格式不完整，请重试。' : 'Plan generation failed: Incomplete data format, please try again.');
+          throw new Error(language === 'zh' ? '生成的行程数据格式有误，请尝试简化文档或重新生成。' : 'The generated itinerary data is malformed. Please try simplifying the document or regenerating.');
         }
+        
+        // Update origin and destination if they were missing but detected by AI
+        if (!origin && parsedPlan.parsedOrigin) setOrigin(parsedPlan.parsedOrigin);
+        if (!destination && parsedPlan.parsedDestination) setDestination(parsedPlan.parsedDestination);
+        
         setPlan(parsedPlan);
         let firstFlightId = '';
         if (parsedPlan.flightOptions && parsedPlan.flightOptions.length > 0) {
@@ -685,10 +739,13 @@ export default function PlanPage() {
     
     if (!currentPlan) return;
     
+    const finalOrigin = currentPlan.parsedOrigin || origin;
+    const finalDestination = currentPlan.parsedDestination || destination;
+
     const planToSave = {
       id: Date.now().toString() + '-' + Math.random().toString(36).substr(2, 9),
-      origin,
-      destination,
+      origin: finalOrigin,
+      destination: finalDestination,
       days: currentPlan.days.length,
       peopleCount: Number(peopleCount) || 1,
       startDate,
@@ -705,8 +762,8 @@ export default function PlanPage() {
         if (currentPlanId) {
           const docRef = doc(db, 'users', userIdToSave, 'plans', currentPlanId);
           await updateDoc(docRef, {
-            destination: destination ? destination.substring(0, 190) : 'Custom',
-            origin: origin ? origin.substring(0, 190) : 'Custom',
+            destination: finalDestination ? finalDestination.substring(0, 190) : 'Custom',
+            origin: finalOrigin ? finalOrigin.substring(0, 190) : 'Custom',
             days: currentPlan.days.length,
             theme: requirements ? requirements.substring(0, 90) : 'General',
             data: JSON.stringify(planToSave)
@@ -715,8 +772,8 @@ export default function PlanPage() {
           const docRef = doc(collection(db, 'users', auth.currentUser!.uid, 'plans'));
           await setDoc(docRef, {
             userId: auth.currentUser!.uid,
-            destination: destination ? destination.substring(0, 190) : 'Custom',
-            origin: origin ? origin.substring(0, 190) : 'Custom',
+            destination: finalDestination ? finalDestination.substring(0, 190) : 'Custom',
+            origin: finalOrigin ? finalOrigin.substring(0, 190) : 'Custom',
             days: currentPlan.days.length,
             theme: requirements ? requirements.substring(0, 90) : 'General',
             createdAt: planToSave.createdAt,
@@ -857,18 +914,18 @@ export default function PlanPage() {
         <div className="mb-8 flex flex-col md:flex-row md:items-end justify-between gap-4">
           <div>
             <h1 className="text-4xl font-bold text-gray-900 tracking-tight flex items-center gap-3">
-              <Sparkles className="text-blue-500" size={32} />
-              {t.title}
+              <Upload className="text-purple-500" size={32} />
+              {language === 'zh' ? '智能文档规划' : 'Document Planner'}
             </h1>
-            <p className="text-gray-500 mt-2 text-lg">{t.subtitle}</p>
+            <p className="text-gray-500 mt-2 text-lg">{language === 'zh' ? '上传攻略、游记或备忘录，AI 为您一键生成行程。' : 'Upload guides or notes, and let AI generate your itinerary.'}</p>
           </div>
           {(!isShared && !isCollab) && (
             <button
-              onClick={() => navigate('/doc-plan')}
-              className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-purple-500 hover:from-purple-600 to-blue-500 hover:to-blue-600 text-white rounded-xl font-medium transition-all shadow-md shadow-purple-500/20"
+              onClick={() => navigate('/plan')}
+              className="flex items-center gap-2 px-5 py-2.5 bg-white hover:bg-gray-50 text-gray-700 border border-gray-200 rounded-xl font-medium transition-all shadow-sm"
             >
-              <Upload size={18} />
-              {language === 'zh' ? '使用文档/长文规划' : 'Plan via Document'}
+              <ArrowLeft size={18} />
+              {language === 'zh' ? '返回基础规划' : 'Back to Basic Planner'}
             </button>
           )}
         </div>
@@ -876,61 +933,33 @@ export default function PlanPage() {
         {/* Input Form or Shared Info */}
         {(!isShared && !isCollab) ? (
           <form onSubmit={handleGenerate} className="bg-white rounded-3xl shadow-sm border border-gray-100 p-6 md:p-8 mb-12">
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
-              {/* Origin */}
-              <div className="space-y-2">
-                <label className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                  <Navigation size={16} className="text-blue-500"/> {t.origin}
+            
+            {/* Requirements & Context Upload */}
+            <div className="space-y-4 mb-6">
+              <div className="flex items-center justify-between">
+                <label className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                  <Info className="text-purple-500"/> {language === 'zh' ? '行程要求与参考文档' : 'Requirements & Context'}
                 </label>
-                <input 
-                  type="text" 
-                  value={origin}
-                  onChange={e => setOrigin(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && e.preventDefault()}
-                  placeholder={t.originPlaceholder}
-                  className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all bg-gray-50/50 focus:bg-white"
-                  required
-                />
-              </div>
-
-              {/* Destination */}
-              <div className="space-y-2">
-                <label className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                  <MapPin size={16} className="text-rose-500"/> {t.destination}
+                <label className="cursor-pointer flex items-center gap-2 text-sm text-purple-600 hover:text-purple-700 font-medium transition-colors bg-purple-50 hover:bg-purple-100 px-4 py-2 rounded-xl border border-purple-100">
+                  <Upload size={16} />
+                  {language === 'zh' ? '上传参考文档 (TXT/MD/XLSX/CSV)' : 'Upload Context (TXT/MD/XLSX/CSV)'}
+                  <input type="file" accept=".txt,.json,.csv,.md,.xls,.xlsx" className="hidden" onChange={handleFileUpload} />
                 </label>
-                <input 
-                  type="text" 
-                  value={destination}
-                  onChange={e => setDestination(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && e.preventDefault()}
-                  placeholder={t.destinationPlaceholder}
-                  className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-rose-500 focus:border-transparent outline-none transition-all bg-gray-50/50 focus:bg-white"
-                  required
-                />
               </div>
-
-              {/* Days */}
-              <div className="space-y-2">
-                <label className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                  <Calendar size={16} className="text-emerald-500"/> {t.days}
-                </label>
-                <input 
-                  type="number" 
-                  min="1"
-                  max="30"
-                  value={days}
-                  onChange={e => setDays(e.target.value === '' ? '' : Number(e.target.value))}
-                  onKeyDown={e => e.key === 'Enter' && e.preventDefault()}
-                  placeholder={t.daysPlaceholder}
-                  className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all bg-gray-50/50 focus:bg-white"
-                  required
-                />
-              </div>
-
+              <textarea 
+                value={requirements}
+                onChange={e => setRequirements(e.target.value)}
+                placeholder={language === 'zh' ? '请在这里粘贴或输入您的完整旅行计划、记事本内容、游记参考等。AI 将自动提取目的地、天数和偏好为您生成专属行程规划...\n\n例如：\n我想去日本玩5天。必去景点有东京铁塔、浅草寺、秋叶原...\n或者直接上传您的攻略文档！' : 'Paste your travel notes, itinerary drafts, or requirements here. AI will automatically extract the destination, duration, and preferences to generate an itinerary...\n\nE.g.:\nA 5-day trip to Japan. Must-visit places: Tokyo Tower, Senso-ji, Akihabara...\nOr directly upload your travel document!'}
+                rows={10}
+                className="w-full px-5 py-4 rounded-2xl border border-gray-200 focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none transition-all bg-gray-50/50 focus:bg-white resize-y text-base"
+              />
+            </div>
+            
+            <div className="flex items-center gap-6 mb-8 bg-blue-50/50 p-4 rounded-2xl border border-blue-100/50">
               {/* People Count */}
-              <div className="space-y-2">
-                <label className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                  <MapPin size={16} className="text-blue-500"/> {t.peopleCount}
+              <div className="flex-1 flex items-center gap-4">
+                <label className="text-sm font-semibold text-gray-700 flex items-center gap-2 whitespace-nowrap">
+                  <Users size={16} className="text-blue-500"/> {t.peopleCount}
                 </label>
                 <input 
                   type="number" 
@@ -939,52 +968,10 @@ export default function PlanPage() {
                   value={peopleCount}
                   onChange={e => setPeopleCount(e.target.value === '' ? '' : Number(e.target.value))}
                   onKeyDown={e => e.key === 'Enter' && e.preventDefault()}
-                  className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all bg-gray-50/50 focus:bg-white"
+                  className="max-w-[120px] px-4 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all bg-white"
                   required
                 />
               </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-              {/* Start Date */}
-              <div className="space-y-2">
-                <label className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                  <Calendar size={16} className="text-indigo-500"/> {t.startDate}
-                </label>
-                <input 
-                  type="date" 
-                  value={startDate}
-                  onChange={e => setStartDate(e.target.value)}
-                  className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all bg-gray-50/50 focus:bg-white"
-                />
-              </div>
-
-              {/* End Date */}
-              <div className="space-y-2">
-                <label className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                  <Calendar size={16} className="text-indigo-500"/> {t.endDate}
-                </label>
-                <input 
-                  type="date" 
-                  value={endDate}
-                  onChange={e => setEndDate(e.target.value)}
-                  className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all bg-gray-50/50 focus:bg-white"
-                />
-              </div>
-            </div>
-
-            {/* Requirements */}
-            <div className="space-y-2 mb-8">
-              <label className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                <Info size={16} className="text-purple-500"/> {t.requirements}
-              </label>
-              <textarea 
-                value={requirements}
-                onChange={e => setRequirements(e.target.value)}
-                placeholder={t.requirementsPlaceholder}
-                rows={3}
-                className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none transition-all bg-gray-50/50 focus:bg-white resize-none"
-              />
             </div>
 
             {error && (
@@ -1016,7 +1003,7 @@ export default function PlanPage() {
             <div>
               <h3 className="text-2xl font-bold text-gray-900 mb-2 flex items-center gap-2">
                 <MapPin className="text-rose-500" size={24} />
-                {origin} <ArrowLeft size={16} className="rotate-180 text-gray-400 mx-1" /> {destination}
+                {origin || (language === 'zh' ? '自定义行程' : 'Custom Plan')} {destination ? <><ArrowLeft size={16} className="rotate-180 text-gray-400 mx-1" /> {destination}</> : ''}
               </h3>
               <div className="flex items-center gap-4 text-gray-600 font-medium">
                 <span className="flex items-center gap-1.5"><Calendar size={18} className="text-emerald-500"/> {days} {t.days}</span>

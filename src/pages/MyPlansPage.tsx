@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import Markdown from 'react-markdown';
 import { ArrowLeft, Calendar, MapPin, Plane, Trash2, Map, Hotel, Train, Camera, Globe, Search, ExternalLink, PlaneTakeoff, PlaneLanding, Ticket, Utensils, Bus, Car, Ship, Footprints, MessageSquare, X, Send, Sparkles, Loader2, Receipt, ArrowUp, ChevronDown, ChevronUp, ChevronsUpDown, ChevronsDownUp, Share, Users } from 'lucide-react';
 import { GoogleGenAI, Type } from '@google/genai';
+import GlobalAuth from '../components/GlobalAuth';
 import { auth, db, handleFirestoreError, OperationType } from '../firebase';
 import { collection, query, where, getDocs, deleteDoc, doc, updateDoc, onSnapshot, setDoc } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
@@ -76,6 +77,7 @@ interface SavedPlan {
   startDate?: string;
   endDate?: string;
   createdAt: string;
+  flightOptions?: FlightOption[];
   selectedFlight?: FlightOption;
   itinerary: DayPlan[];
 }
@@ -247,7 +249,7 @@ export default function MyPlansPage() {
   const [chatMessages, setChatMessages] = useState<{role: 'user' | 'ai', text: string}[]>([]);
   const [isChatLoading, setIsChatLoading] = useState(false);
 
-  const t = translations[language];
+  const t = (translations as any)[language];
 
   useEffect(() => {
     let unsubscribe: () => void = () => {};
@@ -399,6 +401,7 @@ export default function MyPlansPage() {
         peopleCount: 1, // Default or find from plan if available
         startDate: plan.startDate,
         endDate: plan.endDate,
+        flightOptions: plan.flightOptions,
         selectedFlightId: plan.selectedFlight?.id,
         selectedFlight: plan.selectedFlight,
         itinerary: plan.itinerary
@@ -724,19 +727,22 @@ export default function MyPlansPage() {
           </button>
           
           {/* Language Toggle */}
-          <div className="flex items-center bg-white rounded-full p-1 border border-gray-200 shadow-sm">
-            <button
-              onClick={() => setLanguage('zh')}
-              className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${language === 'zh' ? 'bg-gray-900 text-white' : 'text-gray-500 hover:text-gray-900'}`}
-            >
-              中文
-            </button>
-            <button
-              onClick={() => setLanguage('en')}
-              className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${language === 'en' ? 'bg-gray-900 text-white' : 'text-gray-500 hover:text-gray-900'}`}
-            >
-              EN
-            </button>
+          <div className="flex items-center gap-4">
+            <div className="flex items-center bg-white rounded-full p-1 border border-gray-200 shadow-sm">
+              <button
+                onClick={() => setLanguage('zh')}
+                className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${language === 'zh' ? 'bg-gray-900 text-white' : 'text-gray-500 hover:text-gray-900'}`}
+              >
+                中文
+              </button>
+              <button
+                onClick={() => setLanguage('en')}
+                className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${language === 'en' ? 'bg-gray-900 text-white' : 'text-gray-500 hover:text-gray-900'}`}
+              >
+                EN
+              </button>
+            </div>
+            <GlobalAuth />
           </div>
         </div>
         
@@ -878,19 +884,28 @@ export default function MyPlansPage() {
                             <Plane size={80} className="rotate-45" />
                           )}
                         </div>
-                        <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
-                          {plan.selectedFlight.type === 'train' ? (
-                            <>
-                              <Train className="text-blue-500" size={20} />
-                              {t.train}
-                            </>
-                          ) : (
-                            <>
-                              <Ticket className="text-blue-500" size={20} />
-                              {t.flight}
-                            </>
-                          )}
-                        </h3>
+                        <div className="flex flex-col md:flex-row md:items-center justify-between mb-4 gap-4">
+                          <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                            {plan.selectedFlight.type === 'train' ? (
+                              <>
+                                <Train className="text-blue-500" size={20} />
+                                {t.train}
+                              </>
+                            ) : (
+                              <>
+                                <Ticket className="text-blue-500" size={20} />
+                                {t.flight}
+                              </>
+                            )}
+                          </h3>
+                          <button 
+                            onClick={() => navigate('/flights', { state: { origin: plan.origin, destination: plan.destination, startDate: plan.startDate } })}
+                            className="flex text-xs flex-shrink-0 items-center justify-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors font-medium border border-blue-100/50 relative z-10"
+                          >
+                            {language === 'zh' ? '重新选择航班/车次' : 'Select Other Transport'}
+                            <ExternalLink size={14} />
+                          </button>
+                        </div>
                         <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 relative z-10">
                           <div>
                             <div className="inline-block px-3 py-1 bg-blue-100 text-blue-700 text-xs font-bold rounded-lg mb-2">

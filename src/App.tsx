@@ -6,7 +6,9 @@ import { Routes, Route } from 'react-router-dom';
 import Scene from './components/Scene';
 import UIOverlay from './components/UIOverlay';
 import PlanPage from './pages/PlanPage';
+import DocPlanPage from './pages/DocPlanPage';
 import BudgetPage from './pages/BudgetPage';
+import FlightSelectionPage from './pages/FlightSelectionPage';
 import MyPlansPage from './pages/MyPlansPage';
 import SharedPage from './pages/SharedPage';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -199,7 +201,9 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/plan" element={<PlanPage />} />
+        <Route path="/doc-plan" element={<DocPlanPage />} />
         <Route path="/budget" element={<BudgetPage />} />
+        <Route path="/flights" element={<FlightSelectionPage />} />
         <Route path="/my-plans" element={<MyPlansPage />} />
         <Route path="/shared/:shareId" element={<SharedPage />} />
         <Route path="/collab/plan/:userId/:planId" element={<PlanPage />} />

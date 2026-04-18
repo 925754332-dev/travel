@@ -8,7 +8,7 @@ import {
   setPersistence,
   browserLocalPersistence
 } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import { getFirestore, initializeFirestore } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
@@ -19,7 +19,11 @@ setPersistence(auth, browserLocalPersistence).catch(err => {
   console.error("Error setting Firebase persistence:", err);
 });
 
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+// Use initializeFirestore with experimentalForceLongPolling to fix connection issues
+export const db = initializeFirestore(app, {
+  experimentalForceLongPolling: true
+}, firebaseConfig.firestoreDatabaseId);
+
 export const googleProvider = new GoogleAuthProvider();
 
 let isSigningIn = false;
